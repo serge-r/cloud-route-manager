@@ -1,0 +1,113 @@
+version: 2
+project_name: cloud-route-manager
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: cloud-route-manager
+    binary: cloud-route-manager
+    main: .
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .FullCommit }}
+      - -X main.date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+      - config.example.yml
+      - src: packaging/systemd/cloud-route-manager.service
+        dst: systemd/
+
+nfpms:
+  - id: packages
+    package_name: cloud-route-manager
+    vendor: serge-r
+    homepage: https://github.com/serge-r/cloud-route-manager
+    maintainer: serge-r <zoneofmail@gmail.com>
+    description: |-
+      Keeps AWS and Yandex Cloud route tables pointing at this instance.
+      Scans the configured route sources on an interval, updates the route
+      tables and runs the configured commands on success or failure.
+    license: MIT
+    formats: [deb, rpm]
+    # Everything lands under /opt/cloud-route-manager.
+    bindir: /opt/cloud-route-manager/bin
+    contents:
+      - src: config.example.yml
+        dst: /opt/cloud-route-manager/config.yml
+        type: "config|noreplace"
+      - src: config.example.yml
+        dst: /opt/cloud-route-manager/config.example.yml
+      - src: README.md
+        dst: /opt/cloud-route-manager/README.md
+      - src: LICENSE
+        dst: /opt/cloud-route-manager/LICENSE
+      - src: packaging/systemd/cloud-route-manager.service
+        dst: /lib/systemd/system/cloud-route-manager.service
+        packager: deb
+      - src: packaging/systemd/cloud-route-manager.service
+        dst: /usr/lib/systemd/system/cloud-route-manager.service
+        packager: rpm
+      - src: /opt/cloud-route-manager/bin/cloud-route-manager
+        dst: /usr/local/bin/cloud-route-manager
+        type: symlink
+    scripts:
+      postinstall: packaging/scripts/postinstall.sh
+      preremove: packaging/scripts/preremove.sh
+      postremove: packaging/scripts/postremove.sh
+    rpm:
+      group: System Environment/Daemons
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Other
+      order: 99
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: serge-r
+    name: cloud-route-manager
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Docker
+
+    ```
+    docker pull ghcr.io/serge-r/cloud-route-manager:{{ .Tag }}
+    ```

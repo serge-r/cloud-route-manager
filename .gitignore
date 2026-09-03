@@ -1,0 +1,23 @@
+# Go
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Release build artifacts (binaries, packages)
+/dist/
+*.deb
+*.rpm
+
+# Local enrichment caches / databases (see config.example.yaml paths)
+/var/lib/
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local configuration
+/config.yml

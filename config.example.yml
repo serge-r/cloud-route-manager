@@ -1,0 +1,96 @@
+---
+# cloud-route-manager — example configuration.
+#
+# Every key of the "general" section has a command line flag with the same
+# name (-log-severity, -dry-run, -interval, ...). A flag given explicitly wins
+# over the value here.
+
+general:
+  # How often the sources are scanned. 0 means "one pass, then exit".
+  interval: 10m
+
+  # Minimum severity to log: debug | info | warn | error.
+  log-severity: info
+  # Where to log: stdout | stderr | /path/to/file.
+  log-file: stdout
+  # Log format: text | json.
+  log-format: text
+
+  # Compute the changes and log them, but do not call the cloud API.
+  dry-run: false
+
+  # Which cloud we are in: auto | aws | yandex.
+  # "auto" asks the instance metadata service.
+  cloud: auto
+
+  # The primary interface and its address are detected from the default
+  # route. Uncomment to pin them, e.g. when running inside a container.
+  # interface: eth0
+  # ip-address: 10.0.0.5
+
+  # Budget for one scan-and-update pass, and for one action command.
+  timeout: 2m
+  action-timeout: 1m
+
+# Where the routes come from.
+#
+# Every source listed here is queried on each pass, and the results are
+# merged and de-duplicated. Routes may be separated by commas or newlines,
+# with or without a mask; a bare address means /32 (IPv6: /128). Text after
+# "#" or "//" is ignored.
+source:
+  # A list kept right in this file.
+  static:
+    routes:
+      - 1.1.1.1/32
+      - 2.2.2.2/32
+
+  # A file on the local filesystem.
+  # file:
+  #   path: /opt/cloud-route-manager/routes.txt
+  #   # Treat a missing file as an empty list instead of an error.
+  #   optional: true
+
+  # An object in S3 or in an S3-compatible storage.
+  # s3:
+  #   region: eu-north-1
+  #   bucket: configs
+  #   path: data/routes.cfg
+  #   # For Yandex Object Storage and friends:
+  #   # endpoint: https://storage.yandexcloud.net
+  #   # use-path-style: true
+
+  # An AWS Systems Manager parameter (String, StringList or SecureString).
+  # aws-ssm:
+  #   path: /zerotier/eu-north-1/routes
+  #   # Defaults to the region of this instance.
+  #   # region: eu-north-1
+
+  # An attribute of the Yandex Cloud instance metadata.
+  # yandex-instance-metadata:
+  #   key: routes
+
+# The route tables to maintain: AWS rtb-* ids, or Yandex Cloud route table ids.
+destination:
+  route-table-ids:
+    - rtb-0123456789abcdef0
+
+# Commands to run after a pass.
+#
+# "success" runs when routes were actually changed, "failed" runs when the
+# pass failed. Leave a list out and nothing is executed.
+#
+# Placeholders:            environment variables:
+#   ${routes}                CRM_ROUTES         comma separated route list
+#   ${ip-address}            CRM_IP_ADDRESS     address of the primary interface
+#   ${interface}             CRM_INTERFACE      name of the primary interface
+#   ${cloud}                 CRM_CLOUD          aws | yandex
+#   ${routes-count}          —                  number of routes
+actions:
+  # Also run the success commands after the very first pass, even when the
+  # route tables were already up to date.
+  run-on-start: false
+  success:
+    - "/usr/local/bin/reload.sh ${ip-address}"
+  failed:
+    - "/usr/local/bin/failed.sh ${routes}"

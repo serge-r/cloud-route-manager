@@ -1,0 +1,19 @@
+[Unit]
+Description=Cloud Route Manager
+Documentation=https://github.com/serge-r/cloud-route-manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/cloud-route-manager
+EnvironmentFile=-/etc/sysconfig/cloud-route-manager
+ExecStart=/opt/cloud-route-manager/bin/cloud-route-manager -config /opt/cloud-route-manager/config.yml
+# SIGHUP forces an immediate scan without restarting the service.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target
