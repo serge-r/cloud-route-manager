@@ -32,6 +32,11 @@ general:
   timeout: 2m
   action-timeout: 1m
 
+  # Delete local static routes installed by this service that are no longer
+  # listed in local-static-routes below. Off by default: like the cloud side,
+  # the service only creates and overwrites.
+  remove-stale-local-routes: false
+
 # Where the routes come from.
 #
 # Every source listed here is queried on each pass, and the results are
@@ -69,6 +74,21 @@ source:
   # An attribute of the Yandex Cloud instance metadata.
   # yandex-instance-metadata:
   #   key: routes
+
+# Static routes for the routing table of this host, kept in sync on every
+# pass. Independent of "source" and of the cloud route tables.
+#
+#   <prefix> via <gateway>     an explicit next hop
+#   <prefix> via default       whatever the default route points at right now
+#   <prefix> via blackhole     drop the traffic
+#
+# Requires root (CAP_NET_ADMIN) and the ip(8) command. The routes are tagged
+# with proto 201, so `ip route show proto 201` lists exactly what this
+# service owns and nobody else's routes are ever touched.
+# local-static-routes:
+#   - "192.168.0.0/24 via default"
+#   - "10.10.0.0/16 via 1.1.1.1"
+#   - "172.16.5.0/24 via blackhole"
 
 # The route tables to maintain: AWS rtb-* ids, or Yandex Cloud route table ids.
 destination:

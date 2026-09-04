@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/serge-r/cloud-route-manager/internal/localroutes"
 )
 
 // Cloud provider identifiers accepted by general.cloud.
@@ -53,10 +55,14 @@ func (d Duration) String() string { return time.Duration(d).String() }
 
 // Config is the root of the configuration file.
 type Config struct {
-	General     General     `yaml:"general"`
-	Source      Source      `yaml:"source"`
-	Destination Destination `yaml:"destination"`
-	Actions     Actions     `yaml:"actions"`
+	General General `yaml:"general"`
+	Source  Source  `yaml:"source"`
+	// LocalStaticRoutes are maintained in the routing table of the host
+	// itself, independently of the sources and of the cloud route tables.
+	// Each entry reads "<prefix> via <gateway|default|blackhole>".
+	LocalStaticRoutes []string    `yaml:"local-static-routes"`
+	Destination       Destination `yaml:"destination"`
+	Actions           Actions     `yaml:"actions"`
 }
 
 // General holds service-wide settings. Every key here has a command line
@@ -82,6 +88,10 @@ type General struct {
 	Timeout Duration `yaml:"timeout"`
 	// ActionTimeout bounds a single action command.
 	ActionTimeout Duration `yaml:"action-timeout"`
+	// RemoveStaleLocalRoutes deletes local static routes installed by this
+	// service that are no longer listed in local-static-routes. Off by
+	// default, matching the cloud side, which never deletes anything.
+	RemoveStaleLocalRoutes bool `yaml:"remove-stale-local-routes"`
 }
 
 // Source lists the route sources. Every configured source is queried on each
@@ -229,6 +239,11 @@ func (c *Config) Validate() error {
 	}
 	if s := c.Source.YandexMetadata; s != nil && s.Key == "" {
 		return fmt.Errorf("source.yandex-instance-metadata.key: must not be empty")
+	}
+	// Parsed here so that a typo is caught by -check-config, not by the
+	// first pass on a production host.
+	if _, err := localroutes.ParseSpecs(c.LocalStaticRoutes); err != nil {
+		return fmt.Errorf("local-static-routes: %w", err)
 	}
 	if len(c.Destination.RouteTableIDs) == 0 {
 		return fmt.Errorf("destination.route-table-ids: must not be empty")

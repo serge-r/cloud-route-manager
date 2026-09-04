@@ -25,6 +25,9 @@ const (
 	ActionCreate  Action = "create"
 	ActionReplace Action = "replace"
 	ActionNoop    Action = "noop"
+	// ActionDelete only happens for local static routes; cloud route
+	// tables are never cleaned up.
+	ActionDelete Action = "delete"
 )
 
 // Change is a single route table modification.

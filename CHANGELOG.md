@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-09-03
+### Added
+
+- `local-static-routes`: static routes maintained in the routing table of the
+  host itself, written as `"<prefix> via <gateway|default|blackhole>"`.
+  `via default` follows the current default gateway and is re-resolved on
+  every pass. Routes are installed with `ip route replace` and tagged with
+  `proto 201`, so the service only ever touches routes it owns.
+- `general.remove-stale-local-routes` (and the matching
+  `-remove-stale-local-routes` flag) deletes local routes of this service that
+  are no longer listed in the configuration. Off by default.
+- `iproute2` in the Docker image; `local-static-routes` needs `CAP_NET_ADMIN`.
+
+## [0.1.0] - 2026-09-04
 
 First release.
 

@@ -18,6 +18,7 @@ import (
 	awscloud "github.com/serge-r/cloud-route-manager/internal/cloud/aws"
 	yandexcloud "github.com/serge-r/cloud-route-manager/internal/cloud/yandex"
 	"github.com/serge-r/cloud-route-manager/internal/config"
+	"github.com/serge-r/cloud-route-manager/internal/localroutes"
 	"github.com/serge-r/cloud-route-manager/internal/netinfo"
 	"github.com/serge-r/cloud-route-manager/internal/routes"
 	"github.com/serge-r/cloud-route-manager/internal/source"
@@ -31,10 +32,20 @@ type App struct {
 	manager cloud.Manager
 	runner  *actions.Runner
 
+	// local is nil unless the host routing table has to be maintained.
+	local      localManager
+	localSpecs []localroutes.Spec
+
 	// trigger asks the loop for an immediate out-of-schedule cycle.
 	trigger chan struct{}
 	// firstCycle lets actions.run-on-start fire once after startup.
 	firstCycle bool
+}
+
+// localManager is the part of localroutes.Manager the loop uses; the tests
+// substitute their own.
+type localManager interface {
+	Sync(ctx context.Context, specs []localroutes.Spec, removeStale, dryRun bool) ([]cloud.Change, error)
 }
 
 // New prepares the service: it detects the cloud, builds the cloud manager
@@ -61,11 +72,26 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, error)
 		return nil, err
 	}
 
+	localSpecs, err := localroutes.ParseSpecs(cfg.LocalStaticRoutes)
+	if err != nil {
+		return nil, fmt.Errorf("local-static-routes: %w", err)
+	}
+	// Without any local route to install there is nothing to reconcile,
+	// unless cleanup is on: then an emptied list means "remove them all".
+	var local *localroutes.Manager
+	if len(localSpecs) > 0 || cfg.General.RemoveStaleLocalRoutes {
+		local = localroutes.NewManager(log)
+		log.Info("local static routes configured",
+			"count", len(localSpecs), "remove-stale", cfg.General.RemoveStaleLocalRoutes)
+	}
+
 	return &App{
-		cfg:     cfg,
-		log:     log,
-		sources: sources,
-		manager: manager,
+		cfg:        cfg,
+		log:        log,
+		sources:    sources,
+		manager:    manager,
+		local:      local,
+		localSpecs: localSpecs,
 		runner: &actions.Runner{
 			Log:     log,
 			Timeout: cfg.General.ActionTimeout.Duration(),
@@ -219,39 +245,60 @@ func (a *App) actionsBudget() time.Duration {
 	return per * time.Duration(count)
 }
 
-// cycle collects routes and pushes them into the cloud route tables.
-func (a *App) cycle(ctx context.Context) (changed bool, prefixes []netip.Prefix, primary netinfo.Primary, err error) {
-	primary, err = netinfo.Detect(a.cfg.General.Interface, a.cfg.General.IPAddress)
+// cycle maintains the host routing table and the cloud route tables. The two
+// halves are independent: a failure of one does not skip the other.
+func (a *App) cycle(ctx context.Context) (bool, []netip.Prefix, netinfo.Primary, error) {
+	primary, err := netinfo.Detect(a.cfg.General.Interface, a.cfg.General.IPAddress)
 	if err != nil {
 		return false, nil, primary, fmt.Errorf("detect primary interface: %w", err)
 	}
 	a.log.Debug("primary interface detected", "interface", primary.Interface, "ip", primary.IP.String(), "mac", primary.MAC)
 
+	localChanged, localErr := a.syncLocal(ctx)
+	prefixes, cloudChanged, cloudErr := a.syncCloud(ctx, primary)
+
+	return localChanged || cloudChanged, prefixes, primary, errors.Join(localErr, cloudErr)
+}
+
+// syncLocal maintains the static routes of the host itself.
+func (a *App) syncLocal(ctx context.Context) (bool, error) {
+	if a.local == nil {
+		return false, nil
+	}
+	changes, err := a.local.Sync(ctx, a.localSpecs, a.cfg.General.RemoveStaleLocalRoutes, a.cfg.General.DryRun)
+	changed := a.logChanges(changes)
+	if err != nil {
+		return changed, fmt.Errorf("local static routes: %w", err)
+	}
+	return changed, nil
+}
+
+// syncCloud collects the routes of every source and pushes them into the
+// cloud route tables.
+func (a *App) syncCloud(ctx context.Context, primary netinfo.Primary) ([]netip.Prefix, bool, error) {
 	prefixes, srcErr := source.Collect(ctx, a.log, a.sources)
 	if len(prefixes) == 0 {
 		if srcErr != nil {
-			return false, nil, primary, fmt.Errorf("no routes collected: %w", srcErr)
+			return nil, false, fmt.Errorf("no routes collected: %w", srcErr)
 		}
-		return false, nil, primary, errors.New("no routes found in any configured source")
+		return nil, false, errors.New("no routes found in any configured source")
 	}
 	a.log.Info("routes collected", "count", len(prefixes), "routes", strings.Join(routes.Strings(prefixes), ","))
 
 	changes, syncErr := a.manager.Sync(ctx, a.cfg.Destination.RouteTableIDs, prefixes, primary.IP, a.cfg.General.DryRun)
+	return prefixes, a.logChanges(changes), errors.Join(srcErr, syncErr)
+}
+
+// logChanges reports what happened and tells whether anything was really
+// applied — under dry-run nothing was, so the success actions must not fire.
+func (a *App) logChanges(changes []cloud.Change) bool {
 	applied := cloud.Applied(changes)
 	for _, c := range applied {
+		msg := "route updated"
 		if a.cfg.General.DryRun {
-			a.log.Info("dry-run: route would be updated", "table", c.Table, "prefix", c.Prefix, "action", string(c.Action), "previous", c.PrevNextHop)
-			continue
+			msg = "dry-run: route would be updated"
 		}
-		a.log.Info("route updated", "table", c.Table, "prefix", c.Prefix, "action", string(c.Action), "previous", c.PrevNextHop)
+		a.log.Info(msg, "table", c.Table, "prefix", c.Prefix, "action", string(c.Action), "previous", c.PrevNextHop)
 	}
-
-	if err := errors.Join(srcErr, syncErr); err != nil {
-		return len(applied) > 0 && !a.cfg.General.DryRun, prefixes, primary, err
-	}
-	if a.cfg.General.DryRun {
-		// Nothing was actually applied, so success actions must not fire.
-		return false, prefixes, primary, nil
-	}
-	return len(applied) > 0, prefixes, primary, nil
+	return len(applied) > 0 && !a.cfg.General.DryRun
 }

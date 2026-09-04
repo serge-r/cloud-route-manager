@@ -20,7 +20,8 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     -o /cloud-route-manager .
 
 FROM alpine:${ALPINE_VERSION}
-RUN apk --update --no-cache add ca-certificates
+# iproute2 provides ip(8), used by local-static-routes.
+RUN apk --update --no-cache add ca-certificates iproute2
 COPY --from=build /cloud-route-manager /opt/cloud-route-manager/bin/cloud-route-manager
 COPY config.example.yml /opt/cloud-route-manager/config.example.yml
 

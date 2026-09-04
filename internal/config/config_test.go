@@ -70,6 +70,11 @@ general:
   ip-address: 10.0.0.5
   timeout: 2m
   action-timeout: 30s
+  remove-stale-local-routes: true
+local-static-routes:
+  - "192.168.0.0/24 via default"
+  - "10.10.0.0/16 via 1.1.1.1"
+  - "172.16.5.0/24 via blackhole"
 source:
   static:
     routes: [1.1.1.1, 2.2.2.2/32]
@@ -113,12 +118,32 @@ func TestParseEveryDocumentedKey(t *testing.T) {
 	if !cfg.Actions.RunOnStart || len(cfg.Actions.Success) != 1 || len(cfg.Actions.Failed) != 1 {
 		t.Errorf("actions not decoded: %+v", cfg.Actions)
 	}
+	if len(cfg.LocalStaticRoutes) != 3 || !cfg.General.RemoveStaleLocalRoutes {
+		t.Errorf("local static routes not decoded: %+v", cfg.LocalStaticRoutes)
+	}
+}
+
+func TestValidateRejectsBadLocalStaticRoutes(t *testing.T) {
+	for _, bad := range []string{
+		"192.168.0.0/24",
+		"192.168.0.0/24 via",
+		"192.168.0.0/24 through 1.1.1.1",
+		"not-a-prefix via default",
+		"192.168.0.0/24 via not-an-ip",
+		"192.168.0.0/24 via 2001:db8::1",
+	} {
+		body := minimal + "local-static-routes:\n  - \"" + bad + "\"\n"
+		if _, err := Parse([]byte(body)); err == nil {
+			t.Errorf("Parse accepted the invalid local route %q", bad)
+		}
+	}
 }
 
 func TestGeneralKeysMatchTheYAMLTags(t *testing.T) {
 	want := []string{
 		"interval", "log-severity", "log-file", "log-format", "dry-run",
 		"cloud", "interface", "ip-address", "timeout", "action-timeout",
+		"remove-stale-local-routes",
 	}
 	got := GeneralKeys()
 	if len(got) != len(want) {

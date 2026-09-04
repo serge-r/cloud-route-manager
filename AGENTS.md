@@ -20,9 +20,17 @@ At startup, and then every `general.interval`:
 3. Query **every** configured source in a single pass, merge the results,
    drop duplicates.
 4. Update every route table in `destination.route-table-ids` so the collected
-   prefixes point at the address from step 2.
+   prefixes point at the address from step 2, and reconcile
+   `local-static-routes` into the routing table of the host itself.
 5. Run the actions configured for the outcome. Nothing configured, nothing
    runs.
+
+### Local static routes
+
+`local-static-routes` is a top level list of `"<prefix> via <target>"`, where
+the target is a gateway address, `default` (resolved from the current default
+route on every pass) or `blackhole`. It is configuration only — the sources do
+not feed it — and it is independent of the cloud half of a pass.
 
 ### Route sources
 
@@ -53,7 +61,18 @@ maintainer asking for it.
   the first pass. `failed` actions run on every failed pass.
 * **Actions survive a cancelled pass**: they run on a context detached from
   the cycle timeout, so a timed out pass can still report the failure.
-* **`dry-run` performs no mutating API call at all**, in either cloud.
+* **Local routes are marked with `proto 201`** (`localroutes.Proto`) and the
+  service reads, replaces and deletes *only* routes carrying it. That tag is
+  the ownership record: it survives a restart and a crash, so no state file is
+  needed. Never widen the selection to untagged routes.
+* **Local and cloud halves of a pass are independent.** A failure of one does
+  not skip the other; local routes are applied even when no source produced a
+  single route. Both feed the same "did anything change" decision.
+* **Deleting is opt-in and local only**: `general.remove-stale-local-routes`
+  removes `proto 201` routes that left the config. Cloud route tables are
+  never cleaned up, whatever that flag says.
+* **`dry-run` performs no mutating API call at all**, in either cloud, and
+  runs no mutating `ip` command.
 * **Every `general.*` config key has a command line flag of the same name.**
   A flag given explicitly wins; a flag left out keeps the file value.
   `main_test.go` enforces the parity — add both or neither.
@@ -75,6 +94,7 @@ internal/logging           slog handler from general.log-*
 internal/netinfo           primary interface / address detection
 internal/routes            parsing, normalisation, de-duplicated Set
 internal/source            Source interface + static, file, s3, aws-ssm, yandex
+internal/localroutes       spec parsing, host routing table through ip(8)
 internal/cloud             Manager interface, Change type, cloud autodetection
 internal/cloud/aws         EC2 route tables, ENI lookup (metadata, then API)
 internal/cloud/yandex      VPC route tables, instance metadata, IAM token
@@ -97,8 +117,9 @@ Adding a cloud means implementing `cloud.Manager` and extending
 * Errors are wrapped with context (`fmt.Errorf("...: %w", err)`); per-table and
   per-source failures are collected with `errors.Join` instead of aborting the
   pass on the first one.
-* Cloud APIs are reached through small interfaces (`aws.EC2API`) or plain HTTP
-  so tests can fake them. No live cloud calls in tests.
+* Cloud APIs are reached through small interfaces (`aws.EC2API`,
+  `localroutes.Runner`, `app.localManager`) or plain HTTP so tests can fake
+  them. No live cloud calls and no real `ip` invocations in tests.
 * Unknown fields in the YAML are an error (`KnownFields(true)`) — a typo in a
   config key must not be silently ignored.
 * Fields the service does not understand in a Yandex route table entry are

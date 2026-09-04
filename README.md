@@ -20,7 +20,8 @@ At startup, and then on every pass (`general.interval`):
 3. **Query every configured source in one pass**, merge the results and drop
    duplicates.
 4. **Update the route tables** listed in `destination.route-table-ids`, so that
-   each collected prefix points at the address found in step 2.
+   each collected prefix points at the address found in step 2, and install the
+   entries of `local-static-routes` into the routing table of the host itself.
 5. **Run the actions** from `actions`: `success` when routes were actually
    changed, `failed` when the pass failed. No actions configured, nothing runs.
 
@@ -73,6 +74,8 @@ docker run --rm --network host \
   ghcr.io/serge-r/cloud-route-manager:latest
 ```
 
+Add `--cap-add NET_ADMIN` when using `local-static-routes`.
+
 `--network host` lets the service see the host's default route and reach the
 instance metadata service. Without it, pin `general.ip-address`.
 
@@ -102,6 +105,7 @@ leaves the file value alone.
 | `ip-address` | `-ip-address` | detected | pin the next hop address |
 | `timeout` | `-timeout` | `2m` | budget for one pass |
 | `action-timeout` | `-action-timeout` | `1m` | budget for one action command |
+| `remove-stale-local-routes` | `-remove-stale-local-routes` | `false` | delete local routes of this service that left the config |
 
 Flags without a configuration key:
 
@@ -150,6 +154,40 @@ destination:
     - rtb-0123456789abcdef0     # AWS
     - enp1abcd2efgh3ijkl4mn     # Yandex Cloud
 ```
+
+### Local static routes
+
+Besides the cloud route tables, the service can maintain static routes in the
+routing table of the host it runs on. The list is independent of `source`: it
+lives in the configuration file and is reconciled on every pass, so a route
+someone deleted by hand comes back.
+
+```yaml
+local-static-routes:
+  - "192.168.0.0/24 via default"      # via the current default gateway
+  - "10.10.0.0/16 via 1.1.1.1"        # via an explicit gateway
+  - "172.16.5.0/24 via blackhole"     # drop the traffic
+```
+
+`via default` is re-resolved on every pass, so the route follows a default
+gateway that changed. The same create / overwrite / leave-alone rules as for
+the cloud apply, with one difference: `general.remove-stale-local-routes: true`
+additionally deletes routes that this service installed earlier and that are no
+longer in the list.
+
+Routes are installed through `ip route replace` and tagged with **`proto 201`**.
+That tag is how the service tells its own routes from everyone else's — it only
+ever looks at, replaces and deletes routes carrying it, so DHCP, kernel and
+routing-daemon entries are never affected. To see what is being managed:
+
+```sh
+ip route show proto 201
+```
+
+This needs `ip(8)` (package `iproute2`, already in the Docker image) and
+`CAP_NET_ADMIN` — that is, root, or `docker run --cap-add NET_ADMIN`. If you do
+not configure `local-static-routes`, none of this is used and no privileges
+beyond reading metadata are required.
 
 ### Actions
 
@@ -241,6 +279,7 @@ internal/logging           slog setup
 internal/netinfo           primary interface detection
 internal/routes            route parsing and de-duplication
 internal/source            static, file, s3, aws-ssm, yandex metadata sources
+internal/localroutes       static routes in the host routing table via ip(8)
 internal/cloud             provider interface and cloud autodetection
 internal/cloud/aws         EC2 route tables
 internal/cloud/yandex      VPC route tables and instance metadata

@@ -7,12 +7,14 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/serge-r/cloud-route-manager/internal/actions"
 	"github.com/serge-r/cloud-route-manager/internal/cloud"
 	"github.com/serge-r/cloud-route-manager/internal/config"
+	"github.com/serge-r/cloud-route-manager/internal/localroutes"
 	"github.com/serge-r/cloud-route-manager/internal/source"
 )
 
@@ -28,6 +30,21 @@ func (f *fakeManager) Provider() cloud.Provider { return cloud.ProviderAWS }
 func (f *fakeManager) Sync(_ context.Context, _ []string, _ []netip.Prefix, nextHop netip.Addr, _ bool) ([]cloud.Change, error) {
 	f.calls++
 	f.lastIP = nextHop
+	return f.changes, f.err
+}
+
+type fakeLocal struct {
+	changes   []cloud.Change
+	err       error
+	calls     int
+	gotSpecs  []localroutes.Spec
+	gotStale  bool
+	gotDryRun bool
+}
+
+func (f *fakeLocal) Sync(_ context.Context, specs []localroutes.Spec, removeStale, dryRun bool) ([]cloud.Change, error) {
+	f.calls++
+	f.gotSpecs, f.gotStale, f.gotDryRun = specs, removeStale, dryRun
 	return f.changes, f.err
 }
 
@@ -169,6 +186,85 @@ func TestRunOnceDryRunDoesNotFireSuccessActions(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("dry-run must not fire the success actions")
+	}
+}
+
+// withLocal attaches a fake local route manager to an app.
+func withLocal(t *testing.T, app *App, local localManager, entries ...string) *App {
+	t.Helper()
+	specs, err := localroutes.ParseSpecs(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.local, app.localSpecs = local, specs
+	return app
+}
+
+func TestLocalRouteChangesTriggerSuccessActions(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "success")
+	cfg := config.Defaults()
+	cfg.General.RemoveStaleLocalRoutes = true
+	cfg.Actions.Success = []string{"touch " + marker}
+
+	local := &fakeLocal{changes: []cloud.Change{
+		{Table: "local", Prefix: "192.168.0.0/24", Action: cloud.ActionCreate},
+	}}
+	app := withLocal(t, newTestApp(t, &fakeManager{}, cfg), local, "192.168.0.0/24 via default")
+
+	if err := app.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if local.calls != 1 || len(local.gotSpecs) != 1 || !local.gotStale || local.gotDryRun {
+		t.Fatalf("local manager called with %+v, stale=%v dry-run=%v", local.gotSpecs, local.gotStale, local.gotDryRun)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("a local route change must fire the success actions: %v", err)
+	}
+}
+
+func TestLocalRouteFailureDoesNotSkipTheCloud(t *testing.T) {
+	cfg := config.Defaults()
+	mgr := &fakeManager{}
+	app := withLocal(t, newTestApp(t, mgr, cfg),
+		&fakeLocal{err: errors.New("RTNETLINK answers: Network is unreachable")},
+		"192.168.0.0/24 via 1.1.1.1")
+
+	err := app.RunOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "local static routes") {
+		t.Fatalf("RunOnce error = %v, want the local failure reported", err)
+	}
+	if mgr.calls != 1 {
+		t.Error("the cloud route tables must still be updated when the local step fails")
+	}
+}
+
+func TestLocalRoutesRunEvenWithoutCollectedRoutes(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Source.Static = &config.StaticSource{Routes: []string{}}
+
+	local := &fakeLocal{}
+	app := withLocal(t, newTestApp(t, &fakeManager{}, cfg), local, "192.168.0.0/24 via blackhole")
+
+	if err := app.RunOnce(context.Background()); err == nil {
+		t.Fatal("RunOnce: expected the empty source list to be reported")
+	}
+	if local.calls != 1 {
+		t.Error("local static routes must be applied even when no source yielded a route")
+	}
+}
+
+func TestLocalRoutesHonourDryRun(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.General.DryRun = true
+
+	local := &fakeLocal{}
+	app := withLocal(t, newTestApp(t, &fakeManager{}, cfg), local, "192.168.0.0/24 via blackhole")
+
+	if err := app.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if !local.gotDryRun {
+		t.Error("dry-run was not passed down to the local route manager")
 	}
 }
 

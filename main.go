@@ -49,16 +49,17 @@ type options struct {
 	checkConfig bool
 	version     bool
 
-	interval      time.Duration
-	logSeverity   string
-	logFile       string
-	logFormat     string
-	dryRun        bool
-	cloud         string
-	iface         string
-	ipAddress     string
-	timeout       time.Duration
-	actionTimeout time.Duration
+	interval               time.Duration
+	logSeverity            string
+	logFile                string
+	logFormat              string
+	dryRun                 bool
+	cloud                  string
+	iface                  string
+	ipAddress              string
+	timeout                time.Duration
+	actionTimeout          time.Duration
+	removeStaleLocalRoutes bool
 }
 
 func newOptions(out io.Writer) *options {
@@ -80,6 +81,8 @@ func newOptions(out io.Writer) *options {
 	o.fs.StringVar(&o.ipAddress, "ip-address", "", "override general.ip-address")
 	o.fs.DurationVar(&o.timeout, "timeout", 0, "override general.timeout")
 	o.fs.DurationVar(&o.actionTimeout, "action-timeout", 0, "override general.action-timeout")
+	o.fs.BoolVar(&o.removeStaleLocalRoutes, "remove-stale-local-routes", false,
+		"override general.remove-stale-local-routes: delete local routes of this service that left the config")
 
 	o.fs.Usage = func() {
 		_, _ = fmt.Fprintf(out, "cloud-route-manager %s\n\n"+
@@ -116,6 +119,8 @@ func (o *options) applyTo(cfg *config.Config) {
 			cfg.General.Timeout = config.Duration(o.timeout)
 		case "action-timeout":
 			cfg.General.ActionTimeout = config.Duration(o.actionTimeout)
+		case "remove-stale-local-routes":
+			cfg.General.RemoveStaleLocalRoutes = o.removeStaleLocalRoutes
 		}
 	})
 	if o.once {
